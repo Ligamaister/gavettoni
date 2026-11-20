@@ -2585,7 +2585,8 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
       a.bagnatoDaMe = Math.max(0, a.bagnatoDaMe - dt);
       if (a.posto < 0) continue;
       const posto = a.posto - ALTRI_DA, cart = cartellini[posto];
-      if (!a.gi) { scimmie.mesh.setMatrixAt(a.posto, NIENTE); mOmbre.setMatrixAt(1 + posto, NIENTE); cart.hidden = true; continue; }
+      // chi non gioca non si vede, e durante la sfilata sul palco le altre scimmiette si fanno da parte
+      if (!a.gi || (regia && regia.tipi.length)) { scimmie.mesh.setMatrixAt(a.posto, NIENTE); mOmbre.setMatrixAt(1 + posto, NIENTE); cart.hidden = true; continue; }
       const k = Math.min(1, dt * 12), pe = a.e, pn = a.n;
       a.e += (a.te - a.e) * k; a.n += (a.tn - a.n) * k; a.y += (a.ty - a.y) * k;
       a.yaw += scarto(a.tyaw, a.yaw) * k;
