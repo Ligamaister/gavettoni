@@ -2252,7 +2252,14 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
       camera.updateMatrixWorld();
       return;
     }
-    if (!regia.io) return;                                   // nessuno in posa: resta la vista del gioco
+    if (!regia.io) {
+      // nessuno in posa (il primo passo e l'ultimo): un giro lento dall'alto sopra la piazza
+      const a = -1.5 + (orologio - regia.da) * 0.04;
+      camera.position.set(Math.sin(a) * 200, 125, Math.cos(a) * 200);
+      camera.lookAt(0, 22, 0);
+      camera.updateMatrixWorld();
+      return;
+    }
     // la scimmietta: l'occhio le va davanti, dal primo lato dove non c'e un muro di mezzo
     const terra = quota(io.e, io.n) + io.y;
     const tenta = sf => { const ce = io.e + Math.sin(io.yaw + sf) * 2.6, cn = io.n - Math.cos(io.yaw + sf) * 2.6; return edificioIn(ce, cn) < 0 ? [ce, cn] : null; };
