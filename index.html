@@ -1194,7 +1194,7 @@ function guarda() {
 // Si gioca anche in piu: uno dei computer collegati, scelto da solo, muove i passanti e lo dice
 // agli altri (nel codice si chiama capo). Chi gioca non se ne accorge, e da soli il capo si e sempre.
 function avviaGioco() {
-  const GRAV = -19, DURATA = 90, PAUSA = 10, PROTO = D.storia === 'team' ? 12 : 2, IO = 'io';
+  const GRAV = -19, DURATA = 90, PAUSA = 10, PROTO = D.storia === 'team' ? 13 : 3, IO = 'io';
   const SG = { pelle: 252 / 255, sopra: 253 / 255, sotto: 254 / 255, capo: 1, cosa: 245 / 255, acqua: 244 / 255 };
   const TOCCO = matchMedia('(pointer: coarse)').matches;
   controlli.enabled = false;
@@ -1886,11 +1886,14 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
     import('https://cdn.jsdelivr.net/npm/trystero@0.27.0/+esm').then(async T => {
       // i ripetitori: sei fra quelli che la libreria conosce, provati vivi il 20/11/2026. Ne basta uno che risponda
       const ripetitori = ['relay.primal.net', 'relay.snort.social', 'nostr.azzamo.net', 'nostr.sathoarder.com', 'fanfares.nostr1.com', 'relay.angor.io'].map(r => 'wss://' + r);
-      const sala = T.joinRoom({ appId: 'gavettoni-al-duomo-' + (D.storia || 'piazza'), identity: 'none', relayConfig: { urls: ripetitori, warnOnRelayFailure: false } }, PIAZZA);
+      // le pagine aperte dal computer di chi le costruisce (anteprima, prove, scatti) stanno in un mondo a parte,
+      // cosi una prova non finisce mai nella piazza dove sta giocando la gente
+      const banco = /^(localhost|127\.0\.0\.1|)$/.test(location.hostname) ? '-banco' : '';
+      const sala = T.joinRoom({ appId: 'gavettoni-al-duomo-' + (D.storia || 'piazza') + banco, identity: 'none', relayConfig: { urls: ripetitori, warnOnRelayFailure: false } }, PIAZZA);
       // certe reti chiuse (uffici, alberghi) non lasciano passare il collegamento diretto: lo si dice
       sala.onError(err => { if (err && err.code === 'peer-connect-failed') statoRete = 'muro'; });
       const me = await sala.getSelf(), filo = sala.makeAction('c'), noti = new Map();
-      let mia = {}, inVolo = 0;
+      let mia = {}, inVolo = 0, fermoDa = 0;
       filo.onMessage((d, chi) => {
         if (d && typeof d === 'object' && chi && chi.peerId) noti.set(chi.peerId, { peer: chi.peerId, presence: d, updatedAt: Date.now(), isMe: false, sameTab: false, by: null });
       });
@@ -1900,10 +1903,17 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
         manda(p) {
           mia = Object.assign({}, mia, p);
           for (const k in mia) if (mia[k] === null) delete mia[k];
-          // se la linea e lenta non si accodano cartellini vecchi: il prossimo porta tutto
-          if (inVolo > 3 || !Object.keys(sala.getPeers()).length) return;
+          // se la linea e lenta non si accodano cartellini vecchi: il prossimo porta tutto. Ma un invio
+          // rimasto appeso non deve zittire per sempre: dopo due secondi si riparte da zero
+          if (!Object.keys(sala.getPeers()).length) return;
+          if (inVolo > 3) {
+            if (!fermoDa) fermoDa = Date.now();
+            if (Date.now() - fermoDa < 2000) return;
+            inVolo = 0;
+          }
+          fermoDa = 0;
           inVolo++;
-          filo.send(mia).catch(() => {}).finally(() => { inVolo--; });
+          filo.send(mia).catch(() => {}).finally(() => { inVolo = Math.max(0, inVolo - 1); });
         },
       };
       statoRete = 'pronto';
@@ -1985,7 +1995,7 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
   }
   function rientra(g) {
     const a = aggancia(g.e, g.n);
-    g.via = a.via; g.s = a.s; g.te = a.e; g.tn = a.n; g.st = 4; g.preda = null; g.lato = 0;
+    g.via = a.via; g.s = a.s; g.te = a.e; g.tn = a.n; g.st = 4; g.preda = null; g.lato = 0; g.ponte = false;
   }
   // i miei punti: il vigile vale tre, da lontano vale doppio, una serie senza sbagli moltiplica
   function hoBagnato(g, b) {
@@ -2376,37 +2386,79 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
     document.body.append(...comandiDita);
     for (const el of comandiDita) el.hidden = true;
   }
-  // una scheda nascosta non puo fare il capo: lo dice subito, perche da nascosta smette di girare
+  // una scheda che si nasconde non puo fare il capo: lo dice subito, perche da nascosta smette di girare.
+  // Quando ricompare deve prima dimostrare di girare bene (vedi "sano" piu sotto)
   document.addEventListener('visibilitychange', () => {
-    if (stanza) stanza.manda({ g: PROTO, v: document.visibilityState === 'visible' ? 1 : 0, b: ++battito });
+    fluido = 0;
+    if (stanza) stanza.manda({ g: PROTO, v: 0, b: ++battito, e: null, r: null, c: null });
   });
 
   // ------------------------------------------------------ rete
-  // chi era ospite e diventa capo riparte dai passanti come li vede in quel momento
+  // chi era ospite e diventa capo riparte dai passanti come li vede in quel momento: stessa via, stesso
+  // verso in cui li ha visti camminare, stessa distanza dal centro della via. Cosi il cambio non si nota
   function prendiComando() {
+    nIst = Math.max(nIst, vistaIst);
     for (const g of gente) {
-      const a = aggancia(g.e, g.n);
-      g.via = a.via; g.s = a.s; g.lato = 0; g.preda = null;
-      if (Math.hypot(a.e - g.e, a.n - g.n) > 0.6) { g.te = a.e; g.tn = a.n; g.st = 4; }
-      else if (g.st === 3 || g.st === 4 || g.st === 5) g.st = 0;
-      else if (g.st) g.timer = 2;
+      const a = aggancia(g.e, g.n), me = g.be - g.ae, mn = g.bn - g.an, d = Math.hypot(a.e - g.e, a.n - g.n);
+      sulla(a.via, a.s);
+      if (Math.hypot(me, mn) > 0.02) g.verso = me * qui[2] + mn * qui[3] >= 0 ? 1 : -1;
+      g.via = a.via; g.s = a.s; g.preda = null; g.ponte = false;
+      if (d > 1.3 || g.st === 3 || g.st === 4 || g.st === 5) {
+        // era fuori strada (inseguiva, girava attorno a qualcuno): ci torna a piedi
+        g.lato = 0;
+        if (d > 0.4) { g.te = a.e; g.tn = a.n; g.st = 4; } else g.st = 0;
+      } else {
+        g.lato = g.verso * (-(g.e - a.e) * qui[3] + (g.n - a.n) * qui[2]);
+        if (g.st) g.timer = 2;
+      }
     }
   }
+  // Chi muove i passanti. Lo fa uno solo, il capo, e gli altri lo seguono. Chi lo sta facendo resta capo
+  // finche gira bene: chi arriva dopo, o torna dopo essere rimasto fermo, non glielo toglie. Se il capo
+  // sparisce o rallenta (scheda nascosta, telefono in tasca, pannello che gira a scatti), prende il comando
+  // chi fra i sani ha l'etichetta piu bassa, e riparte dai passanti come li vede.
+  const battiti = new Map();               // per ogni altro giocatore, l'ultimo battito sentito e quando
+  let senzaCapo = 0;                       // da quando non si vede nessuno che fa il capo
+  // gira bene chi e in primo piano e ha ricevuto una ventina di fotogrammi puntuali di fila
+  const sano = () => document.visibilityState === 'visible' && fluido >= 20;
+  // fra due che fanno il capo vince chi lo fa da piu tempo (ha contato piu istantanee dei passanti);
+  // se sono li li, cioe hanno cominciato insieme, vince l'etichetta piu bassa
+  const vince = (a, b) => (Math.abs(a.n - b.n) > 10 ? a.n > b.n : a.id < b.id);
   function rete() {
     if (!stanza) { capo = true; return; }
-    const pari = stanza.pari(), adesso = Date.now(), vivi = new Map();
-    let candidato = null;
+    const pari = stanza.pari(), adesso = Date.now(), ora = performance.now(), vivi = new Map(), sani = [], tutti = [];
     for (const p of pari) {
       if (p.isMe && p.sameTab) { mioId = p.peer; continue; }
       const pr = p.presence;
       if (!pr || pr.g !== PROTO || adesso - p.updatedAt > 3500) continue;
       vivi.set(p.peer, p);
-      if (pr.v === 1 && (candidato === null || p.peer < candidato)) candidato = p.peer;
+      let bt = battiti.get(p.peer);
+      if (!bt) battiti.set(p.peer, bt = { b: null, quando: ora });
+      if (pr.b !== bt.b) { bt.b = pr.b; bt.quando = ora; }
+      // n dice quante istantanee ha contato chi sta facendo il capo, -1 per chi non lo fa
+      const voce = { id: p.peer, n: Array.isArray(pr.c) ? pr.c[0] | 0 : -1 };
+      tutti.push(voce);
+      if (pr.v === 1 && ora - bt.quando < 1200) sani.push(voce);
     }
-    if (mioId && document.visibilityState === 'visible' && (candidato === null || mioId < candidato)) candidato = mioId;
+    for (const id of battiti.keys()) if (!vivi.has(id)) battiti.delete(id);
+    // se almeno uno gira bene valgono solo i sani; se sono tutti lenti si sceglie fra tutti, pur di averne uno
+    const ioSano = sano(), primaFila = sani.length > 0 || ioSano, gruppo = primaFila ? sani : tutti, ioValgo = !!mioId && (primaFila ? ioSano : true);
+    let meglio = null;                       // fra gli altri, chi sta gia facendo il capo
+    for (const q of gruppo) if (q.n >= 0 && (!meglio || vince(q, meglio))) meglio = q;
     const eroCapo = capo;
-    capoId = candidato === null ? mioId : candidato;
-    capo = !mioId || capoId === mioId;
+    if (!mioId) { capo = true; capoId = null; senzaCapo = 0; }
+    // resto io: finche nessun altro che vale lo sta facendo, oppure se lo fa ma tocca a me
+    else if (capo && (!meglio || (ioValgo && vince({ id: mioId, n: nIst }, meglio)))) { capoId = mioId; senzaCapo = 0; }
+    else if (meglio) { capo = false; capoId = meglio.id; senzaCapo = 0; }                                    // seguo chi lo sta facendo
+    else {
+      // nessuno lo sta facendo: se dura mezzo secondo (un singhiozzo del capo non basta) tocca
+      // all'etichetta piu bassa fra chi vale
+      if (!senzaCapo) senzaCapo = ora;
+      let primo = ioValgo ? mioId : null;
+      for (const q of gruppo) if (primo === null || q.id < primo) primo = q.id;
+      capoId = primo === null ? mioId : primo;
+      capo = capoId === mioId && ora - senzaCapo > 500;
+    }
     if (capo && !eroCapo) prendiComando();
 
     for (const [id, p] of vivi) try {
@@ -2474,7 +2526,7 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
     if (!stanza || (orologio - ultimoInvio < 0.1 && !daMandare)) return;
     ultimoInvio = orologio;
     daMandare = false;
-    const cartellino = { g: PROTO, b: ++battito, v: document.visibilityState === 'visible' ? 1 : 0, gi: sonoDentro ? 1 : 0, pt: punti,
+    const cartellino = { g: PROTO, b: ++battito, v: sano() ? 1 : 0, gi: sonoDentro ? 1 : 0, pt: punti,
       m: [r2(io.e), r2(io.n), r2(io.y), r2(io.yaw), r2(io.moto), io.fradicio > 0 ? 1 : 0, r2(io.lancio)], t: mieiLanci.slice(), h: mieiColpi.slice() };
     if (mioNome) cartellino.nm = mioNome;
     if (capo) {
@@ -2491,9 +2543,14 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
   }
 
   // ------------------------------------------------------ un fotogramma
-  let media = 0.016, ultimoCambio = 0, rialzi = 0, ultimoPodio = -1, congelato = false;
+  let media = 0.016, ultimoCambio = 0, rialzi = 0, ultimoPodio = -1, congelato = false, fluido = 0, ultimoVero = 0;
   function avanza(dt) {
     if (congelato) return;
+    // i fotogrammi arrivano puntuali? Chi gira a scatti (pannello nascosto, scheda in secondo piano) non fa il capo.
+    // Un singhiozzo sotto il mezzo secondo non conta
+    const vero = performance.now();
+    fluido = vero - ultimoVero < 600 ? Math.min(99, fluido + 1) : 0;
+    ultimoVero = vero;
     orologio += dt;
     // se i fotogrammi rallentano si disegna un po' piu piccolo, se avanzano si torna su (due volte al massimo)
     media = media * 0.95 + dt * 0.05;
@@ -2626,17 +2683,26 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
         }
         if (g.st === 0 || g.st === 1) {
           vel = g.vel * (g.st === 1 ? 2.4 : 1);
-          g.s += g.verso * vel * dt;
-          if (g.s > g.via.lung || g.s < 0) {
-            const scelte = g.via.agganci[g.s < 0 ? 0 : 1];
-            if (scelte.length && Math.random() < 0.8) {
-              const c = scelte[Math.floor(Math.random() * scelte.length)];
-              g.via = c.via; g.verso = c.capo ? -1 : 1; g.s = c.capo ? c.via.lung : 0;
-            } else { g.verso *= -1; g.s = Math.min(g.via.lung, Math.max(0, g.s)); }
+          if (g.ponte) {
+            // sta passando da una via all'altra, o girando un angolo: ci va a piedi invece di comparire di la
+            const dx = g.te - g.e, dy = g.tn - g.n, d = Math.hypot(dx, dy), passo = vel * dt;
+            if (d <= passo + 0.05) g.ponte = false;
+            else { de = dx / d; dn = dy / d; g.e += de * passo; g.n += dn * passo; }
+          } else {
+            g.s += g.verso * vel * dt;
+            if (g.s > g.via.lung || g.s < 0) {
+              const scelte = g.via.agganci[g.s < 0 ? 0 : 1];
+              if (scelte.length && Math.random() < 0.8) {
+                const c = scelte[Math.floor(Math.random() * scelte.length)];
+                g.via = c.via; g.verso = c.capo ? -1 : 1; g.s = c.capo ? c.via.lung : 0;
+              } else { g.verso *= -1; g.lato *= -1; g.s = Math.min(g.via.lung, Math.max(0, g.s)); }     // torna indietro restando dallo stesso lato
+            }
+            sulla(g.via, g.s);
+            de = qui[2] * g.verso; dn = qui[3] * g.verso;
+            const pe = qui[0] - dn * g.lato, pn = qui[1] + de * g.lato;
+            if (Math.hypot(pe - g.e, pn - g.n) > 0.7) { g.te = pe; g.tn = pn; g.ponte = true; de = 0; dn = 0; vel = 0; }
+            else { g.e = pe; g.n = pn; }
           }
-          sulla(g.via, g.s);
-          de = qui[2] * g.verso; dn = qui[3] * g.verso;
-          g.e = qui[0] - dn * g.lato; g.n = qui[1] + de * g.lato;
           if (g.st === 1 && (g.timer -= dt) <= 0) g.st = 0;
         } else if (g.st === 2) {
           if ((g.timer -= dt) <= 0) g.st = 0;
@@ -2915,7 +2981,7 @@ vBagnato = clamp(aVita.z - senza * 2.0, 0.0, 1.0);`;
   }
   return { avanza, tira, entra, io, occhio, gente, altri, turno, presenta, mostraPasso, finePresentazione, cartelloInizio, statoPiazza, passi: PASSI.length,
     info: () => ({ dentro: sonoDentro, turno: turno.s + turno.k + ' ' + Math.ceil(turno.t), punti, serie, capo, mioId, capoId, altri: [...altri.values()].map(a => [a.id, a.gi ? 1 : 0, a.pt, r2(a.e), r2(a.n)]),
-      palle: palle.filter(b => b.vivo).length, storia: D.storia || '', rete: statoRete, piazza: PIAZZA, nome: mioNome, passo: passoN, pari: stanza ? stanza.pari().length : 0, rapito: io.rapito, media, qualita, vie: vie.length, compari: compari.length, tipi: TIPI.map(t => t.nome + ' ' + t.quanti).join(', ') }) };
+      palle: palle.filter(b => b.vivo).length, storia: D.storia || '', rete: statoRete, sano: sano(), istantanee: nIst, piazza: PIAZZA, nome: mioNome, passo: passoN, pari: stanza ? stanza.pari().length : 0, rapito: io.rapito, media, qualita, vie: vie.length, compari: compari.length, tipi: TIPI.map(t => t.nome + ' ' + t.quanti).join(', ') }) };
 }
 const gioco = GIOCO ? avviaGioco() : null;
 
